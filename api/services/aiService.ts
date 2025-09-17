@@ -693,9 +693,6 @@ export class AIService {
       throw error;
     }
   }
-      client.release();
-    }
-  }
 
   // Private helper methods for AI processing
   private async performQuestionEvaluation(questionText: string, context: any): Promise<any> {
@@ -1400,26 +1397,44 @@ export class AIService {
     // Simulate AI processing delay
     await this.simulateProcessingDelay(500, 1500);
 
-    // Simulate evaluation scores (in production, these would come from AI models)
-    const relevance_score = this.generateScore(0.7, 1.0);
-    const difficulty_score = this.generateScore(0.5, 0.9);
-    const clarity_score = this.generateScore(0.8, 1.0);
-    const bias_score = this.generateScore(0.0, 0.3);
+    // Enhanced question evaluation with contextual analysis
+    const analysis = this.analyzeQuestionContent(questionText, context);
     
-    const overall_score = (relevance_score + difficulty_score + clarity_score + (1 - bias_score)) / 4;
+    // Calculate relevance score based on job requirements and context
+    const relevance_score = this.calculateRelevanceScore(questionText, context, analysis);
+    
+    // Assess difficulty level using linguistic complexity and domain knowledge
+    const difficulty_score = this.calculateDifficultyScore(questionText, analysis);
+    
+    // Evaluate clarity using readability metrics and structure analysis
+    const clarity_score = this.calculateClarityScore(questionText, analysis);
+    
+    // Detect potential bias using multiple bias detection algorithms
+    const bias_score = this.calculateBiasScore(questionText, analysis);
+    
+    // Weighted overall score with emphasis on relevance and bias
+    const overall_score = (
+      relevance_score * 0.35 + 
+      difficulty_score * 0.25 + 
+      clarity_score * 0.25 + 
+      (1 - bias_score) * 0.15
+    );
 
-    const feedback = this.generateQuestionFeedback({
+    const feedback = this.generateEnhancedQuestionFeedback({
       relevance_score,
       difficulty_score,
       clarity_score,
-      bias_score
+      bias_score,
+      analysis
     });
 
-    const suggestions = this.generateQuestionSuggestions(questionText, {
+    const suggestions = this.generateContextualSuggestions(questionText, {
       relevance_score,
       difficulty_score,
       clarity_score,
-      bias_score
+      bias_score,
+      analysis,
+      context
     });
 
     return {
@@ -1430,7 +1445,7 @@ export class AIService {
       overall_score,
       feedback,
       suggestions,
-      confidence: this.generateScore(0.85, 0.98)
+      confidence: this.calculateConfidenceScore(analysis)
     };
   }
 
@@ -1595,6 +1610,249 @@ export class AIService {
     return { questions, reasoning };
   }
 
+  // Enhanced AI evaluation helper methods
+  
+  private analyzeQuestionContent(questionText: string, context?: any): any {
+    const words = questionText.toLowerCase().split(/\s+/);
+    const sentences = questionText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    
+    // Linguistic analysis
+    const wordCount = words.length;
+    const avgWordsPerSentence = wordCount / Math.max(sentences.length, 1);
+    const complexWords = words.filter(word => word.length > 6).length;
+    const questionWords = words.filter(word => 
+      ['what', 'how', 'why', 'when', 'where', 'which', 'who'].includes(word)
+    ).length;
+    
+    // Technical term detection
+    const technicalTerms = this.detectTechnicalTerms(words, context);
+    
+    // Question type classification
+    const questionType = this.classifyQuestionType(questionText);
+    
+    return {
+      wordCount,
+      sentences: sentences.length,
+      avgWordsPerSentence,
+      complexWords,
+      questionWords,
+      technicalTerms,
+      questionType,
+      readabilityScore: this.calculateReadabilityScore(wordCount, sentences.length, complexWords)
+    };
+  }
+  
+  private calculateRelevanceScore(questionText: string, context: any, analysis: any): number {
+    let score = 0.7; // Base score
+    
+    // Boost score for technical terms relevant to job requirements
+    if (context?.jobRequirements && analysis.technicalTerms.length > 0) {
+      const relevantTerms = analysis.technicalTerms.filter(term => 
+        context.jobRequirements.required_skills?.some(skill => 
+          skill.toLowerCase().includes(term.toLowerCase())
+        )
+      );
+      score += Math.min(0.2, relevantTerms.length * 0.05);
+    }
+    
+    // Adjust based on question type appropriateness
+    if (analysis.questionType === 'behavioral' && context?.jobRequirements?.soft_skills_important) {
+      score += 0.1;
+    } else if (analysis.questionType === 'technical' && context?.jobRequirements?.technical_role) {
+      score += 0.1;
+    }
+    
+    // Penalize overly generic questions
+    const genericPhrases = ['tell me about', 'describe your', 'what is your'];
+    if (genericPhrases.some(phrase => questionText.toLowerCase().includes(phrase))) {
+      score -= 0.1;
+    }
+    
+    return Math.max(0.1, Math.min(1.0, score));
+  }
+  
+  private calculateDifficultyScore(questionText: string, analysis: any): number {
+    let score = 0.5; // Base difficulty
+    
+    // Increase difficulty for complex sentence structure
+    if (analysis.avgWordsPerSentence > 15) score += 0.2;
+    if (analysis.avgWordsPerSentence > 20) score += 0.1;
+    
+    // Increase difficulty for technical terms
+    score += Math.min(0.3, analysis.technicalTerms.length * 0.05);
+    
+    // Increase difficulty for multi-part questions
+    const multiPartIndicators = ['and', 'also', 'additionally', 'furthermore'];
+    if (multiPartIndicators.some(indicator => questionText.toLowerCase().includes(indicator))) {
+      score += 0.1;
+    }
+    
+    // Adjust based on question type
+    if (analysis.questionType === 'situational' || analysis.questionType === 'problem_solving') {
+      score += 0.15;
+    }
+    
+    return Math.max(0.1, Math.min(1.0, score));
+  }
+  
+  private calculateClarityScore(questionText: string, analysis: any): number {
+    let score = 0.8; // Base clarity
+    
+    // Penalize for poor readability
+    if (analysis.readabilityScore < 0.5) score -= 0.2;
+    if (analysis.readabilityScore < 0.3) score -= 0.2;
+    
+    // Penalize for overly long sentences
+    if (analysis.avgWordsPerSentence > 25) score -= 0.15;
+    
+    // Boost for clear question structure
+    if (analysis.questionWords > 0) score += 0.1;
+    
+    // Penalize for ambiguous language
+    const ambiguousWords = ['thing', 'stuff', 'something', 'anything'];
+    if (ambiguousWords.some(word => questionText.toLowerCase().includes(word))) {
+      score -= 0.15;
+    }
+    
+    return Math.max(0.1, Math.min(1.0, score));
+  }
+  
+  private calculateBiasScore(questionText: string, analysis: any): number {
+    let biasScore = 0.0; // Start with no bias
+    
+    // Check for gender bias indicators
+    const genderBiasTerms = ['guys', 'girls', 'ladies', 'gentlemen'];
+    if (genderBiasTerms.some(term => questionText.toLowerCase().includes(term))) {
+      biasScore += 0.3;
+    }
+    
+    // Check for age bias
+    const ageBiasTerms = ['young', 'old', 'experienced', 'fresh graduate'];
+    if (ageBiasTerms.some(term => questionText.toLowerCase().includes(term))) {
+      biasScore += 0.2;
+    }
+    
+    // Check for cultural bias
+    const culturalBiasTerms = ['native speaker', 'cultural fit', 'team player'];
+    if (culturalBiasTerms.some(term => questionText.toLowerCase().includes(term))) {
+      biasScore += 0.25;
+    }
+    
+    // Check for educational bias
+    const educationalBiasTerms = ['ivy league', 'top university', 'prestigious'];
+    if (educationalBiasTerms.some(term => questionText.toLowerCase().includes(term))) {
+      biasScore += 0.2;
+    }
+    
+    return Math.max(0.0, Math.min(1.0, biasScore));
+  }
+  
+  private detectTechnicalTerms(words: string[], context?: any): string[] {
+    // Common technical terms across domains
+    const technicalTerms = [
+      'algorithm', 'database', 'api', 'framework', 'architecture', 'scalability',
+      'optimization', 'debugging', 'testing', 'deployment', 'security', 'authentication',
+      'encryption', 'machine learning', 'artificial intelligence', 'data structure'
+    ];
+    
+    return words.filter(word => 
+      technicalTerms.some(term => term.includes(word) || word.includes(term))
+    );
+  }
+  
+  private classifyQuestionType(questionText: string): string {
+    const text = questionText.toLowerCase();
+    
+    if (text.includes('tell me about a time') || text.includes('describe a situation')) {
+      return 'behavioral';
+    } else if (text.includes('how would you') || text.includes('what would you do')) {
+      return 'situational';
+    } else if (text.includes('explain') || text.includes('implement') || text.includes('design')) {
+      return 'technical';
+    } else if (text.includes('solve') || text.includes('approach')) {
+      return 'problem_solving';
+    } else {
+      return 'general';
+    }
+  }
+  
+  private calculateReadabilityScore(wordCount: number, sentenceCount: number, complexWords: number): number {
+    // Simplified Flesch Reading Ease calculation
+    const avgWordsPerSentence = wordCount / Math.max(sentenceCount, 1);
+    const avgSyllablesPerWord = 1.5 + (complexWords / wordCount) * 0.5; // Approximation
+    
+    const score = 206.835 - (1.015 * avgWordsPerSentence) - (84.6 * avgSyllablesPerWord);
+    return Math.max(0, Math.min(100, score)) / 100; // Normalize to 0-1
+  }
+  
+  private generateEnhancedQuestionFeedback(params: any): string {
+    const { relevance_score, difficulty_score, clarity_score, bias_score, analysis } = params;
+    
+    let feedback = [];
+    
+    // Relevance feedback
+    if (relevance_score > 0.8) {
+      feedback.push('Highly relevant to the role requirements.');
+    } else if (relevance_score < 0.6) {
+      feedback.push('Consider making the question more specific to the role.');
+    }
+    
+    // Difficulty feedback
+    if (difficulty_score > 0.8) {
+      feedback.push('This is a challenging question that will test advanced skills.');
+    } else if (difficulty_score < 0.4) {
+      feedback.push('Consider adding complexity to better assess candidate capabilities.');
+    }
+    
+    // Clarity feedback
+    if (clarity_score < 0.6) {
+      feedback.push('The question could be clearer and more concise.');
+    }
+    
+    // Bias feedback
+    if (bias_score > 0.2) {
+      feedback.push('Potential bias detected. Review for inclusive language.');
+    }
+    
+    return feedback.join(' ');
+  }
+  
+  private generateContextualSuggestions(questionText: string, params: any): string[] {
+    const { relevance_score, clarity_score, bias_score, analysis, context } = params;
+    const suggestions = [];
+    
+    if (relevance_score < 0.7) {
+      suggestions.push('Add specific technical requirements or role-related scenarios.');
+    }
+    
+    if (clarity_score < 0.7) {
+      suggestions.push('Break down complex questions into simpler parts.');
+      suggestions.push('Use more specific language instead of vague terms.');
+    }
+    
+    if (bias_score > 0.2) {
+      suggestions.push('Replace potentially biased terms with neutral alternatives.');
+      suggestions.push('Focus on skills and competencies rather than personal characteristics.');
+    }
+    
+    if (analysis.questionType === 'general') {
+      suggestions.push('Make the question more specific to the role or domain.');
+    }
+    
+    return suggestions;
+  }
+  
+  private calculateConfidenceScore(analysis: any): number {
+    let confidence = 0.85; // Base confidence
+    
+    // Higher confidence for well-structured questions
+    if (analysis.questionWords > 0) confidence += 0.05;
+    if (analysis.readabilityScore > 0.7) confidence += 0.05;
+    if (analysis.technicalTerms.length > 0) confidence += 0.03;
+    
+    return Math.max(0.7, Math.min(0.98, confidence));
+  }
+
   // Helper methods for data retrieval and analysis
 
   private async getQuestionEvaluations(interviewId: string): Promise<QuestionEvaluation[]> {
@@ -1667,7 +1925,7 @@ export class AIService {
       return { performance_level: 'initial', strengths: [], weaknesses: [] };
     }
 
-    const avgScore = answerEvals.reduce((sum, eval) => sum + eval.overall_score, 0) / answerEvals.length;
+    const avgScore = answerEvals.reduce((sum, evaluation) => sum + evaluation.overall_score, 0) / answerEvals.length;
     
     return {
       performance_level: avgScore > 0.8 ? 'high' : avgScore > 0.6 ? 'medium' : 'low',
@@ -1683,11 +1941,11 @@ export class AIService {
     emotionAnalysis: EmotionAnalysis[]
   ): any {
     const avgQuestionScore = questionEvals.length > 0 
-      ? questionEvals.reduce((sum, eval) => sum + eval.overall_score, 0) / questionEvals.length 
+      ? questionEvals.reduce((sum, evaluation) => sum + evaluation.overall_score, 0) / questionEvals.length 
       : 0;
     
     const avgAnswerScore = answerEvals.length > 0 
-      ? answerEvals.reduce((sum, eval) => sum + eval.overall_score, 0) / answerEvals.length 
+      ? answerEvals.reduce((sum, evaluation) => sum + evaluation.overall_score, 0) / answerEvals.length 
       : 0;
     
     const avgStressLevel = emotionAnalysis.length > 0 
@@ -1833,7 +2091,7 @@ export class AIService {
   }
 
   private extractCommonStrengths(evaluations: AnswerEvaluation[]): string[] {
-    const allStrengths = evaluations.flatMap(eval => eval.strengths || []);
+    const allStrengths = evaluations.flatMap(evaluation => evaluation.strengths || []);
     const strengthCounts = allStrengths.reduce((acc, strength) => {
       acc[strength] = (acc[strength] || 0) + 1;
       return acc;
@@ -1845,7 +2103,7 @@ export class AIService {
   }
 
   private extractCommonWeaknesses(evaluations: AnswerEvaluation[]): string[] {
-    const allWeaknesses = evaluations.flatMap(eval => eval.improvement_areas || []);
+    const allWeaknesses = evaluations.flatMap(evaluation => evaluation.improvement_areas || []);
     const weaknessCounts = allWeaknesses.reduce((acc, weakness) => {
       acc[weakness] = (acc[weakness] || 0) + 1;
       return acc;

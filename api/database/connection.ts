@@ -220,9 +220,15 @@ class DatabaseConnection {
   public get connected(): boolean {
     return this.isConnected;
   }
+
+  // Get the PostgreSQL pool
+  public getPool(): Pool {
+    return this.pgPool;
+  }
 }
 
-// Export singleton instance
+// Export singleton instance and class
+export { DatabaseConnection };
 export const db = DatabaseConnection.getInstance();
 
 // Initialize database connection

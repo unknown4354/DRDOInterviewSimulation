@@ -38,10 +38,13 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
   const [cameraPosition, setCameraPosition] = useState<Vector3>();
   const [isInitialized, setIsInitialized] = useState(false);
   const [roomStatus, setRoomStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [audioLevels, setAudioLevels] = useState<Map<string, number>>(new Map());
   
   // Refs
   const roomIdRef = useRef<string>();
   const keyboardHandlerRef = useRef<(event: KeyboardEvent) => void>();
+  const audioAnalyzers = useRef<Map<string, AnalyserNode>>(new Map());
+  const animationFrameRef = useRef<number>();
 
   // Custom hooks
   const { 
@@ -70,6 +73,93 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
     evaluateAnswer,
     generateQuestions
   } = useAI();
+
+  // Real-time audio level monitoring
+  const startAudioLevelMonitoring = useCallback(() => {
+    const monitorAudioLevels = () => {
+      const newAudioLevels = new Map<string, number>();
+      
+      // Monitor remote streams
+      remoteStreams.forEach(({ userId, stream }) => {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length > 0 && audioTracks[0].enabled) {
+          let analyzer = audioAnalyzers.current.get(userId);
+          
+          if (!analyzer) {
+            try {
+              const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+              const source = audioContext.createMediaStreamSource(stream);
+              analyzer = audioContext.createAnalyser();
+              analyzer.fftSize = 256;
+              source.connect(analyzer);
+              audioAnalyzers.current.set(userId, analyzer);
+            } catch (error) {
+              console.error('Failed to create audio analyzer:', error);
+              return;
+            }
+          }
+          
+          const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+          analyzer.getByteFrequencyData(dataArray);
+          
+          // Calculate average audio level
+          const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+          const normalizedLevel = average / 255;
+          
+          newAudioLevels.set(userId, normalizedLevel);
+        } else {
+          newAudioLevels.set(userId, 0);
+        }
+      });
+      
+      // Monitor local stream
+      if (localStream && mediaState.audio) {
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length > 0 && audioTracks[0].enabled) {
+          let analyzer = audioAnalyzers.current.get(currentUser.id);
+          
+          if (!analyzer) {
+            try {
+              const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+              const source = audioContext.createMediaStreamSource(localStream);
+              analyzer = audioContext.createAnalyser();
+              analyzer.fftSize = 256;
+              source.connect(analyzer);
+              audioAnalyzers.current.set(currentUser.id, analyzer);
+            } catch (error) {
+              console.error('Failed to create local audio analyzer:', error);
+            }
+          }
+          
+          if (analyzer) {
+            const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+            analyzer.getByteFrequencyData(dataArray);
+            const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+            const normalizedLevel = average / 255;
+            newAudioLevels.set(currentUser.id, normalizedLevel);
+          }
+        }
+      }
+      
+      setAudioLevels(newAudioLevels);
+      animationFrameRef.current = requestAnimationFrame(monitorAudioLevels);
+    };
+    
+    monitorAudioLevels();
+  }, [remoteStreams, localStream, mediaState.audio, currentUser.id]);
+
+  // Start audio monitoring when streams are available
+  useEffect(() => {
+    if ((remoteStreams.length > 0 || localStream) && roomStatus === 'connected') {
+      startAudioLevelMonitoring();
+    }
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [remoteStreams, localStream, roomStatus, startAudioLevelMonitoring]);
 
   // Initialize room and connections
   useEffect(() => {
@@ -106,15 +196,23 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
     }
   }, [socketConnected, isInitialized, interviewId, currentUser, socket, joinRoom]);
 
-  // Update participants from socket
+  // Enhanced participant management with audio stream integration
   useEffect(() => {
     if (socketParticipants) {
       const avatars: ParticipantAvatar[] = socketParticipants.map((participant, index) => {
-        // Calculate positions around the table
-        const angle = (index / Math.max(socketParticipants.length, 1)) * Math.PI * 2;
-        const radius = 3;
+        // Calculate positions around the table with better spacing
+        const totalParticipants = Math.max(socketParticipants.length, 1);
+        const angle = (index / totalParticipants) * Math.PI * 2;
+        const radius = Math.max(3, totalParticipants * 0.8); // Dynamic radius based on participant count
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
+        
+        // Find corresponding remote stream for this participant
+        const remoteStream = remoteStreams.find(rs => rs.userId === participant.user_id);
+        
+        // Get real-time audio level
+         const audioLevel = audioLevels.get(participant.user_id) || 0;
+         const speakingThreshold = 0.1; // Threshold for considering someone as speaking
         
         return {
           id: participant.user_id,
@@ -122,14 +220,16 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
           position: new Vector3(x, 0, z),
           rotation: new THREE.Euler(0, angle + Math.PI, 0),
           isActive: participant.connection_status === 'connected',
-          isSpeaking: participant.media_state?.audio_enabled || false,
-          role: participant.user_info?.role || 'observer'
+           isSpeaking: participant.media_state?.audio_enabled && audioLevel > speakingThreshold,
+           role: participant.user_info?.role || 'observer',
+          audioStream: remoteStream?.stream,
+          audioLevel: audioLevel
         };
       });
       
       setParticipants(avatars);
     }
-  }, [socketParticipants]);
+  }, [socketParticipants, remoteStreams, audioLevels]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -209,7 +309,8 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
       switch (type) {
         case 'audio':
           await toggleAudio();
-          setMediaState(prev => ({ ...prev, audio: !prev.audio }));
+          const newAudioState = !mediaState.audio;
+          setMediaState(prev => ({ ...prev, audio: newAudioState }));
           
           // Notify other participants
           if (socket && roomIdRef.current) {
@@ -217,23 +318,44 @@ const InterviewRoom3D: React.FC<InterviewRoom3DProps> = ({
               room_id: roomIdRef.current,
               user_id: currentUser.id,
               media_type: 'audio',
-              enabled: !mediaState.audio
+              enabled: newAudioState
             });
           }
+          
+          // Update WebRTC peer connections
+          if (localStream) {
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack) {
+              audioTrack.enabled = newAudioState;
+            }
+          }
+          
+          toast.success(newAudioState ? 'Microphone enabled' : 'Microphone disabled');
           break;
           
         case 'video':
           await toggleVideo();
-          setMediaState(prev => ({ ...prev, video: !prev.video }));
+          const newVideoState = !mediaState.video;
+          setMediaState(prev => ({ ...prev, video: newVideoState }));
           
           if (socket && roomIdRef.current) {
             socket.emit('media-state-change', {
               room_id: roomIdRef.current,
               user_id: currentUser.id,
               media_type: 'video',
-              enabled: !mediaState.video
+              enabled: newVideoState
             });
           }
+          
+          // Update WebRTC peer connections
+          if (localStream) {
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack) {
+              videoTrack.enabled = newVideoState;
+            }
+          }
+          
+          toast.success(newVideoState ? 'Camera enabled' : 'Camera disabled');
           break;
           
         case 'screenShare':

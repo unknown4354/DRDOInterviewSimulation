@@ -11,7 +11,8 @@ import {
   Sphere,
   useTexture,
   Html,
-  Stats
+  Stats,
+  PositionalAudio
 } from '@react-three/drei';
 import { Suspense } from 'react';
 import { Vector3, Euler } from 'three';
@@ -25,6 +26,8 @@ interface ParticipantAvatar {
   isActive: boolean;
   isSpeaking: boolean;
   role: 'interviewer' | 'candidate' | 'observer';
+  audioStream?: MediaStream;
+  audioLevel?: number;
 }
 
 interface BoardroomProps {
@@ -306,27 +309,148 @@ const Plant: React.FC<{ position: [number, number, number] }> = ({ position }) =
   );
 };
 
-// Participant Avatar Component
+// Spatial Audio Component for 3D positional audio
+const SpatialAudio: React.FC<{
+  audioStream?: MediaStream;
+  position: Vector3;
+  isActive: boolean;
+  volume?: number;
+}> = ({ audioStream, position, isActive, volume = 1 }) => {
+  const audioRef = useRef<THREE.PositionalAudio>(null);
+  const { camera } = useThree();
+  
+  useEffect(() => {
+    if (audioRef.current && audioStream && isActive) {
+      try {
+        // Create audio context and source
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(audioStream);
+        
+        // Create gain node for volume control
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = volume;
+        
+        // Connect audio nodes
+        source.connect(gainNode);
+        
+        // Set up positional audio properties
+        audioRef.current.setRefDistance(1);
+        audioRef.current.setRolloffFactor(2);
+        audioRef.current.setDistanceModel('exponential');
+        audioRef.current.setMaxDistance(20);
+        
+        // Update listener position to camera
+        const listener = audioContext.listener;
+        if (listener.positionX) {
+          listener.positionX.value = camera.position.x;
+          listener.positionY.value = camera.position.y;
+          listener.positionZ.value = camera.position.z;
+        }
+        
+      } catch (error) {
+        console.error('Failed to setup spatial audio:', error);
+      }
+    }
+  }, [audioStream, isActive, volume, camera]);
+  
+  useFrame(() => {
+    if (audioRef.current) {
+      // Update audio position
+      audioRef.current.position.copy(position);
+      
+      // Update listener orientation based on camera
+      const listener = audioRef.current.context.listener;
+      if (listener.forwardX) {
+        const forward = new THREE.Vector3(0, 0, -1);
+        forward.applyQuaternion(camera.quaternion);
+        const up = new THREE.Vector3(0, 1, 0);
+        up.applyQuaternion(camera.quaternion);
+        
+        listener.forwardX.value = forward.x;
+        listener.forwardY.value = forward.y;
+        listener.forwardZ.value = forward.z;
+        listener.upX.value = up.x;
+        listener.upY.value = up.y;
+        listener.upZ.value = up.z;
+      }
+    }
+  });
+  
+  if (!audioStream || !isActive) return null;
+  
+  return (
+    <positionalAudio
+      ref={audioRef}
+      args={[camera]}
+      position={position}
+    />
+  );
+};
+
+// Enhanced Participant Avatar Component with Advanced Animations
 const ParticipantAvatar: React.FC<{
   participant: ParticipantAvatar;
   isCurrentUser: boolean;
   onClick?: () => void;
 }> = ({ participant, isCurrentUser, onClick }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const headRef = useRef<THREE.Mesh>(null);
+  const bodyRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
+  const [emotionState, setEmotionState] = useState<'neutral' | 'speaking' | 'listening' | 'thinking'>('neutral');
+
+  // Update emotion state based on participant activity
+  useEffect(() => {
+    if (participant.isSpeaking) {
+      setEmotionState('speaking');
+    } else if (participant.isActive) {
+      setEmotionState('listening');
+    } else {
+      setEmotionState('neutral');
+    }
+  }, [participant.isSpeaking, participant.isActive]);
 
   useFrame((state) => {
-    if (meshRef.current) {
-      // Gentle floating animation for speaking participants
+    if (meshRef.current && headRef.current && bodyRef.current) {
+      const time = state.clock.elapsedTime;
+      
+      // Enhanced speaking animation with head movement
       if (participant.isSpeaking) {
-        meshRef.current.position.y = participant.position.y + Math.sin(state.clock.elapsedTime * 2) * 0.1;
+        // Gentle floating animation
+        meshRef.current.position.y = participant.position.y + Math.sin(time * 2) * 0.1;
+        
+        // Head nodding animation
+        headRef.current.rotation.x = Math.sin(time * 4) * 0.1;
+        headRef.current.rotation.y = Math.sin(time * 2.5) * 0.05;
+        
+        // Body slight movement
+        bodyRef.current.rotation.z = Math.sin(time * 1.5) * 0.02;
+      } else {
+        // Subtle breathing animation for non-speaking participants
+        const breathingIntensity = participant.isActive ? 0.05 : 0.02;
+        meshRef.current.position.y = participant.position.y + Math.sin(time * 0.8) * breathingIntensity;
+        
+        // Occasional head movement for listening
+        if (participant.isActive && Math.sin(time * 0.3) > 0.8) {
+          headRef.current.rotation.y = Math.sin(time * 0.5) * 0.1;
+        } else {
+          headRef.current.rotation.y = THREE.MathUtils.lerp(headRef.current.rotation.y, 0, 0.05);
+        }
       }
       
-      // Subtle glow effect for active participants
+      // Enhanced glow effect for active participants
       if (participant.isActive) {
         const material = meshRef.current.material as THREE.MeshStandardMaterial;
-        material.emissive.setHex(0x004400);
-        material.emissiveIntensity = 0.2 + Math.sin(state.clock.elapsedTime * 3) * 0.1;
+        const glowIntensity = participant.isSpeaking ? 0.4 : 0.2;
+        material.emissive.setHex(participant.isSpeaking ? 0x004400 : 0x000044);
+        material.emissiveIntensity = glowIntensity + Math.sin(time * 3) * 0.1;
+      }
+      
+      // Hover animation
+      if (hovered) {
+        bodyRef.current.scale.setScalar(1 + Math.sin(time * 8) * 0.02);
+      } else {
+        bodyRef.current.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
       }
     }
   });
@@ -348,21 +472,63 @@ const ParticipantAvatar: React.FC<{
       onPointerOver={() => setHovered(true)}
       onPointerOut={() => setHovered(false)}
     >
-      {/* Avatar Body */}
-      <Sphere 
-        ref={meshRef}
-        args={[0.3, 16, 16]} 
-        position={[0, 2.2, 0]}
-        scale={hovered ? 1.1 : 1}
-      >
-        <meshStandardMaterial 
-          color={getAvatarColor()}
-          roughness={0.4}
-          metalness={0.1}
-          transparent
-          opacity={isCurrentUser ? 0.8 : 1}
-        />
-      </Sphere>
+      {/* Avatar Body Group */}
+      <group ref={bodyRef}>
+        {/* Avatar Head */}
+        <Sphere 
+          ref={headRef}
+          args={[0.25, 16, 16]} 
+          position={[0, 2.4, 0]}
+        >
+          <meshStandardMaterial 
+            color={getAvatarColor()}
+            roughness={0.3}
+            metalness={0.1}
+            transparent
+            opacity={isCurrentUser ? 0.8 : 1}
+          />
+        </Sphere>
+        
+        {/* Avatar Eyes */}
+        <group position={[0, 2.4, 0]}>
+          <Sphere args={[0.03]} position={[-0.08, 0.05, 0.2]}>
+            <meshStandardMaterial color="#ffffff" />
+          </Sphere>
+          <Sphere args={[0.03]} position={[0.08, 0.05, 0.2]}>
+            <meshStandardMaterial color="#ffffff" />
+          </Sphere>
+          <Sphere args={[0.015]} position={[-0.08, 0.05, 0.22]}>
+            <meshStandardMaterial color="#000000" />
+          </Sphere>
+          <Sphere args={[0.015]} position={[0.08, 0.05, 0.22]}>
+            <meshStandardMaterial color="#000000" />
+          </Sphere>
+        </group>
+        
+        {/* Avatar Body */}
+        <Sphere 
+          ref={meshRef}
+          args={[0.35, 16, 16]} 
+          position={[0, 1.8, 0]}
+          scale={[1, 1.2, 0.8]}
+        >
+          <meshStandardMaterial 
+            color={getAvatarColor()}
+            roughness={0.4}
+            metalness={0.1}
+            transparent
+            opacity={isCurrentUser ? 0.8 : 1}
+          />
+        </Sphere>
+        
+        {/* Avatar Arms */}
+        <Sphere args={[0.15, 8, 8]} position={[-0.45, 1.8, 0]} scale={[1, 1.5, 1]}>
+          <meshStandardMaterial color={getAvatarColor()} roughness={0.4} />
+        </Sphere>
+        <Sphere args={[0.15, 8, 8]} position={[0.45, 1.8, 0]} scale={[1, 1.5, 1]}>
+          <meshStandardMaterial color={getAvatarColor()} roughness={0.4} />
+        </Sphere>
+      </group>
 
       {/* Chair */}
       <Chair position={[0, 0, 0]} />
@@ -407,6 +573,14 @@ const ParticipantAvatar: React.FC<{
           {participant.role.toUpperCase()}
         </Text>
       </group>
+      
+      {/* Spatial Audio */}
+      <SpatialAudio
+        audioStream={participant.audioStream}
+        position={participant.position}
+        isActive={participant.isActive && participant.isSpeaking}
+        volume={participant.audioLevel || 1}
+      />
     </group>
   );
 };
